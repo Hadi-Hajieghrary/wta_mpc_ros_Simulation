@@ -1,0 +1,141 @@
+<launch>
+	
+	<!-- <arg name="robot_x"   default="1.0" />
+	<arg name="robot_y"   default="-4.0" />
+	<arg name="robot_yaw" default="1.57" /> -->
+	
+	<arg name="robot_x"   default="10.0" />
+	<arg name="robot_y"   default="10.0" />
+	<arg name="robot_yaw" default="-1.57" />
+
+	<!--tf_prefix to be used by gazebo plugins and in the robot's urdf etc.-->
+	<arg name="tf_prefix" default=""/>
+	<!--$(arg prefix) is used in all the config files.-->
+	<arg name="prefix" value="$(arg tf_prefix)/" if="$(eval tf_prefix != '')" /> 
+	<arg name="prefix" value="" unless="$(eval tf_prefix != '')" />
+	<!--$(arg model_name) is Name of the Gazebo robot model (needs to be different for each robot).-->
+	<arg name="model_name" default="mir"/>
+	<!--$(arg map_file) is Path to a map .yaml file.-->
+	<arg name="map_file" default="$(find gazebo_worlds)/maps/aws/small_warehouse.yaml"/>
+	<!--$(arg virtual_walls_map_file) is Path to a virtual walls map .yaml file (optional)-->
+	<arg name="virtual_walls_map_file" default="$(arg map_file)"/>
+	<arg name="with_virtual_walls" default="true" />
+	
+	<!-- ### -->
+	<!-- Launh the Gazebo World: Small Warehouse-->
+	<!-- 
+		The Actor's Pose is available through the topic: /actor{i}_pose: geometry_msgs/PoseStamped
+	-->
+	<include file="$(find gazebo_worlds)/launch/small_warehouse.launch">
+		<arg name="paused" default="true"/>
+		<arg name="use_sim_time" default="true"/>
+		<arg name="gui" default="true"/>
+		<arg name="verbose" default="true"/>
+		<arg name="recording" default="false"/>
+	</include>
+	
+	<!-- ### -->
+	<!-- Load the URDF of the Robot into the Parameter Server and Spawn it into the Gazebo World-->
+	<!-- 
+		Velocity command to the MiR robot (through diff_drive_controller plugin): /mobile_base_controller/cmd_vel: geometry_msgs/Twist
+		Odometry reading of the MiR robot (through diff_drive_controller plugin): /mobile_base_controller/odom: nav_msgs/Odometry
+		Actual pose of the Robot in simulation: /base_pose_ground_truth: nav_msgs/Odometry
+	-->
+	<include file="$(find mir_description)/launch/upload_mir_urdf.launch">
+		<arg name="tf_prefix" value="$(arg tf_prefix)"/>
+	</include>
+	<!-- Spawn the robot into Gazebo -->
+	<node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" 
+		args="-param robot_description -urdf -model $(arg model_name)
+			-x $(arg robot_x) -y $(arg robot_y) -Y $(arg robot_yaw) " />
+	<!-- Load ros_control controller configurations -->
+	<rosparam file="$(find mir_description)/config/joint_state_controller.yaml" command="load" />
+	<rosparam file="$(find mir_description)/config/diffdrive_controller.yaml" command="load" subst_value="true" />
+	<!-- Start the controllers -->
+	<node name="controller_spawner" pkg="controller_manager" type="spawner" output="screen"
+		args="joint_state_controller mobile_base_controller"/>
+	<!-- Robot state publisher -->
+	<node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen" />
+	<!-- Load teleop 
+	<node name="rqt_robot_steering" pkg="rqt_robot_steering" type="rqt_robot_steering">
+		<param name="default_topic" value="mobile_base_controller/cmd_vel"/>
+		<param name="default_vx_max" value="1.0" />
+		<param name="default_vx_min" value="-1.0" />
+		<param name="default_vw_max" value="1.5" />
+		<param name="default_vw_min" value="-1.5" />
+	</node>
+	-->
+	<!-- create combined scan topic (like on real MiR) -->
+	<node pkg="topic_tools" type="relay" name="b_scan_relay" args="b_scan scan"/>
+	<node pkg="topic_tools" type="relay" name="f_scan_relay" args="f_scan scan"/>
+	<node name="b_rep117_laser_filter" pkg="mir_driver" type="rep117_filter.py" output="screen">
+		<remap from="scan" to="b_scan" />
+		<remap from="scan_filtered" to="b_scan_rep117" />
+	</node>
+	<node name="f_rep117_laser_filter" pkg="mir_driver" type="rep117_filter.py" output="screen">
+		<remap from="scan" to="f_scan" />
+		<remap from="scan_filtered" to="f_scan_rep117" />
+	</node>
+	
+	
+	<!-- ### -->
+	<!-- Load the map of the environment to the Map Server-->
+	<!-- 
+		Topic: /map: nav_msgs/OccupancyGrid
+		Service: /static_map: Type: nav_msgs/GetMap  Args: NONE
+	-->
+	<node name="static_map_server" pkg="map_server" type="map_server" args="$(arg map_file)" ns="/" output="screen">
+		<param name="frame_id" type="string" value="map"/>
+	</node>
+
+	<node if="$(arg with_virtual_walls)" name="virtual_walls_map_server" pkg="map_server" type="map_server" args="$(arg virtual_walls_map_file)" ns="/virtual_walls" output="screen">
+		<param name="frame_id" type="string" value="map"/>
+	</node>
+
+
+	<!-- ### -->
+	<!-- Robot Localization Mechanics -->
+	<!-- EKF to fuse odom and imu-->
+	<!-- 
+		Fuse imu to odom to produce: /odometry/filtered: nav_msgs/Odometry
+		Fuse imu to odom to update tf tree
+	-->
+	<node pkg="robot_localization" type="ekf_localization_node" name="ekf_localization_node" clear_params="true" output="screen">
+		<rosparam command="load" file="$(find mir_gazebo)/config/ekf.yaml" subst_value="true"/>
+		<remap from="odom" to="mobile_base_controller/odom" />
+	</node>
+	
+	<!-- Load Adaptive (or KLD-sampling) Monte Carlo Localization -->
+	<!-- 
+		Estimation of the Robots position: /amcl_pose: geometry_msgs/PoseWithCovarianceStamped
+		Particles used to estimate the pose of the robot: /particlecloud: geometry_msgs/PoseArray
+	-->
+	<include file="$(find mir_navigation)/launch/amcl.launch">
+		<arg name="use_map_topic"   default="true"/>
+		<arg name="scan_topic"      default="scan"/>
+		<arg name="map_topic"       default="/map"/>
+		<arg name="map_service"     default="/static_map"/>
+		<arg name="initial_pose_x" value="$(arg robot_x)" />
+		<arg name="initial_pose_y" value="$(arg robot_y)" />
+		<arg name="initial_pose_a" value="$(arg robot_yaw)" />
+		<arg name="global_frame_id" default="/map"/>
+	</include>
+
+	
+	<!-- ### -->
+	<!-- This npde provides a service for planning global path on them map -->
+	<node pkg="global_path_planner" type="global_path_planner_node" name="global_path_planner" output="screen" respawn="false"  clear_params="true">
+		<param name="SBPLLatticePlanner/primitive_filename" value="$(find mir_navigation)/mprim/unicycle_highcost_10cm.mprim" />
+		<rosparam file="$(find mir_navigation)/config/move_base_common_params.yaml" command="load" />
+		<rosparam file="$(find mir_navigation)/config/sbpl_global_params.yaml" command="load" />
+		<rosparam file="$(find mir_navigation)/config/costmap_common_params.yaml" command="load" ns="global_costmap" subst_value="true" />
+		<rosparam file="$(find mir_navigation)/config/costmap_global_params.yaml" command="load" />
+		<rosparam file="$(find mir_navigation)/config/costmap_global_params_plugins_virtual_walls.yaml" command="load" if="$(arg with_virtual_walls)" />
+		<rosparam file="$(find mir_navigation)/config/costmap_global_params_plugins_no_virtual_walls.yaml" command="load" unless="$(arg with_virtual_walls)" />
+		<remap from="map" to="/map" />
+		<remap from="cur_pose" to="/amcl_pose" />
+	</node>
+	
+	<node pkg="rviz" type="rviz" name="rviz" args="-d $(find mpc_motion_pred)/rviz/rviz_with_obst.rviz"/>
+
+</launch>

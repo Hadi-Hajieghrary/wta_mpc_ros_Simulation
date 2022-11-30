@@ -1,0 +1,15 @@
+[submodule "gazebo_ros_actor_pose_plugin"]
+	path = gazebo_ros_actor_pose_plugin
+	url = git@github.com:Hadi-Hajieghrary/gazebo_ros_actor_pose_plugin.git
+[submodule "global_path_planner"]
+	path = global_path_planner
+	url = git@github.com:Hadi-Hajieghrary/global_path_planner.git
+[submodule "gazebo_ros_2Dmap_plugin"]
+	path = gazebo_ros_2Dmap_plugin
+	url = https://github.com/marinaKollmitz/gazebo_ros_2Dmap_plugin.git
+[submodule "rospy_message_converter"]
+	path = rospy_message_converter
+	url = https://github.com/uos/rospy_message_converter.git
+[submodule "navigation"]
+	path = navigation
+	url = https://github.com/ros-planning/navigation.git
