@@ -13,3 +13,6 @@
 [submodule "navigation"]
 	path = navigation
 	url = https://github.com/ros-planning/navigation.git
+[submodule "mir_robot"]
+	path = mir_robot
+	url = https://github.com/dfki-ric/mir_robot.git
